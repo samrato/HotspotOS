@@ -1,0 +1,7 @@
+FROM node:24-alpine
+WORKDIR /app
+COPY apps/dashboard/package.json ./
+RUN npm install
+COPY apps/dashboard/ ./
+EXPOSE 3000
+CMD ["npm", "run", "dev"]

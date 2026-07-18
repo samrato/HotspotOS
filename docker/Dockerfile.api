@@ -1,0 +1,23 @@
+# Stage 1: Build Captive Portal React Frontend
+FROM node:24-alpine AS portal-builder
+WORKDIR /app/portal
+COPY services/captive-portal/package*.json ./
+RUN npm install
+COPY services/captive-portal/ ./
+RUN npm run build
+
+# Stage 2: Build Go API Server
+FROM golang:1.22-alpine AS go-builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/api ./apps/api
+
+# Stage 3: Final Production Container
+FROM alpine:latest
+WORKDIR /app
+COPY --from=go-builder /app/api /app/api
+COPY --from=portal-builder /app/portal/dist ./services/captive-portal/dist
+EXPOSE 8080
+CMD ["./api"]

@@ -1,0 +1,99 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hotspotos-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hotspotos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hotspotos-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: hotspotos-api
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/hotspotos?sslmode=disable
+      - REDIS_URL=redis:6379
+      - JWT_SECRET=super_secret_jwt_key_hotspotos
+      - NETWORK_MANAGER_URL=http://network-manager:8081
+      - PAYMENT_SERVICE_URL=http://payment-service:8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  network-manager:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.network-manager
+    container_name: hotspotos-network-manager
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - SIMULATE=true # Fallback simulation mode to pass testing in sandboxed/container environments
+    cap_add:
+      - NET_ADMIN # Required for nftables manipulation on real hosts
+    depends_on:
+      - redis
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.payment-service
+    container_name: hotspotos-payment-service
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/hotspotos?sslmode=disable
+      - REDIS_URL=redis:6379
+      - API_INTERNAL_URL=http://api:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: hotspotos-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+    driver: local

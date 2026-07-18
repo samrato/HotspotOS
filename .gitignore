@@ -1,0 +1,68 @@
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+
+# Node / JS / Frontend
+node_modules/
+/dist/
+/build/
+/out/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vite build directories inside monorepo apps and services
+**/dist/
+**/build/
+**/.expo/
+**/.metro/
+
+# Go compiled binaries and test artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/apps/api/api
+/services/network-manager/network-manager
+/services/payment-service/payment-service
+
+# Go Workspace files (if any developer uses go.work locally)
+go.work
+go.work.sum
+
+# Environment variables and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+secrets/
+*.pem
+*.key
+
+# Docker & Database local data
+postgres_data/
+redis_data/
+db_data/
