@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +110,35 @@ func handleSTKPush(c *fiber.Ctx) error {
 	}
 
 	return c.Status(resp.StatusCode).JSON(result)
+}
+
+// Proxy callback from Safaricom to payment-service
+func handlePaymentCallback(c *fiber.Ctx) error {
+	paymentServiceURL := os.Getenv("PAYMENT_SERVICE_URL")
+	if paymentServiceURL == "" {
+		paymentServiceURL = "http://localhost:8082"
+	}
+
+	bodyBytes := c.Body()
+
+	req, err := http.NewRequest("POST", paymentServiceURL+"/payments/callback", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to build request"})
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "payment service is unreachable"})
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return c.Status(resp.StatusCode).SendString("Callback forwarding failed")
+	}
+
+	return c.Status(http.StatusOK).JSON(fiber.Map{"ResultCode": 0, "ResultDesc": "Success"})
 }
 
 // Internal callback endpoint: called by payment-service to finalize client auth on firewall
@@ -441,4 +472,84 @@ func handleAdminDeletePlan(c *fiber.Ctx) error {
 	database.DB.Create(&audit)
 
 	return c.JSON(fiber.Map{"status": "deleted"})
+}
+
+func handleCaptivePortalRedirect(c *fiber.Ctx) error {
+	gatewayIP := os.Getenv("GATEWAY_IP")
+	if gatewayIP == "" {
+		gatewayIP = "10.0.0.1"
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	host := c.Hostname()
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// If client is already requesting the portal IP, localhost or 127.0.0.1
+	if host == gatewayIP || host == "localhost" || host == "127.0.0.1" {
+		if c.Path() != "/" {
+			return c.Redirect("/", fiber.StatusFound)
+		}
+		return c.Status(404).SendString("Not Found")
+	}
+
+	// Otherwise, this is a captive portal network check request (e.g. connectivitycheck.gstatic.com)
+	clientIP := c.IP()
+	clientMAC := resolveClientMac(clientIP)
+
+	logger.Info("Intercepted captive portal check, redirecting client to portal page",
+		"client_ip", clientIP,
+		"client_mac", clientMAC,
+		"original_url", c.OriginalURL())
+
+	// Redirect to the portal served at the gateway IP with MAC and IP in query parameters
+	portalURL := fmt.Sprintf("http://%s:%s/?mac=%s&ip=%s", gatewayIP, port, clientMAC, clientIP)
+	return c.Redirect(portalURL, fiber.StatusFound)
+}
+
+func resolveClientMac(ip string) string {
+	networkManagerURL := os.Getenv("NETWORK_MANAGER_URL")
+	if networkManagerURL == "" {
+		networkManagerURL = "http://localhost:8081"
+	}
+
+	url := fmt.Sprintf("%s/clients/mac?ip=%s", networkManagerURL, ip)
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		logger.Warn("Failed to contact network manager to resolve MAC", "url", url, "error", err)
+		return generateMockMac(ip)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Warn("Network manager returned non-200 for MAC resolve", "status", resp.StatusCode)
+		return generateMockMac(ip)
+	}
+
+	var res struct {
+		Mac string `json:"mac"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		logger.Warn("Failed to decode MAC resolve response", "error", err)
+		return generateMockMac(ip)
+	}
+
+	if res.Mac == "" {
+		return generateMockMac(ip)
+	}
+
+	return res.Mac
+}
+
+func generateMockMac(ip string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(ip))
+	hash := hasher.Sum(nil)
+	return fmt.Sprintf("02:54:%02x:%02x:%02x:%02x", hash[0], hash[1], hash[2], hash[3])
 }

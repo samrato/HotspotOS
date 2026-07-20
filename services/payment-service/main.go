@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -54,6 +58,10 @@ type MpesaCallbackRequest struct {
 }
 
 func main() {
+	loadEnvFile(".env")
+	loadEnvFile("../.env")
+	loadEnvFile("../../.env")
+
 	logger.Init("development")
 	logger.Info("Starting HotspotOS Payment Service...")
 
@@ -114,14 +122,113 @@ func handleSTKPush(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "phone_number and positive amount are required"})
 	}
 
-	checkoutRequestID := "ws_CO_" + uuid.New().String()
+	phone := sanitizePhoneNumber(req.PhoneNumber)
+
+	mpesaBaseURL := os.Getenv("MPESA_BASE_URL")
+	mpesaConsumerKey := os.Getenv("MPESA_CONSUMER_KEY")
+	mpesaConsumerSecret := os.Getenv("MPESA_CONSUMER_SECRET")
+	mpesaShortcode := os.Getenv("MPESA_BUSINESS_SHORTCODE")
+	mpesaPasskey := os.Getenv("MPESA_PASSKEY")
+	mpesaCallbackURL := os.Getenv("MPESA_CALLBACK_URL")
+	mpesaPartyA := os.Getenv("MPESA_PARTY_A")
+	mpesaPartyB := os.Getenv("MPESA_PARTY_B")
+
+	var checkoutRequestID string
+	var realSTKSent bool
+
+	if mpesaConsumerKey != "" && mpesaConsumerSecret != "" {
+		logger.Info("Attempting real Safaricom M-Pesa STK Push...")
+		accessToken, err := getMpesaAccessToken(mpesaBaseURL, mpesaConsumerKey, mpesaConsumerSecret)
+		if err != nil {
+			logger.Error("Failed to get Safaricom access token", "error", err)
+			return c.Status(500).JSON(fiber.Map{"error": "M-Pesa authorization failed: " + err.Error()})
+		}
+
+		loc, err := time.LoadLocation("Africa/Nairobi")
+		var now time.Time
+		if err == nil {
+			now = time.Now().In(loc)
+		} else {
+			now = time.Now().UTC().Add(3 * time.Hour)
+		}
+		timestamp := now.Format("20060102150405")
+		password := generateMpesaPassword(mpesaShortcode, mpesaPasskey, timestamp)
+
+		pA := phone
+		if mpesaPartyA != "" {
+			pA = mpesaPartyA
+		}
+		pB := mpesaShortcode
+		if mpesaPartyB != "" {
+			pB = mpesaPartyB
+		}
+
+		stkURL := fmt.Sprintf("%s/mpesa/stkpush/v1/processrequest", mpesaBaseURL)
+		stkBody := map[string]interface{}{
+			"BusinessShortCode": mpesaShortcode,
+			"Password":          password,
+			"Timestamp":         timestamp,
+			"TransactionType":   "CustomerPayBillOnline",
+			"Amount":            int(req.Amount),
+			"PartyA":            pA,
+			"PartyB":            pB,
+			"PhoneNumber":       phone,
+			"CallBackURL":       mpesaCallbackURL,
+			"AccountReference":  "HotspotOS",
+			"TransactionDesc":   "Internet Access Plan",
+		}
+
+		bodyBytes, _ := json.Marshal(stkBody)
+		stkReq, err := http.NewRequest("POST", stkURL, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to build STK Push request: " + err.Error()})
+		}
+
+		stkReq.Header.Set("Authorization", "Bearer "+accessToken)
+		stkReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		stkResp, err := client.Do(stkReq)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Safaricom API request failed: " + err.Error()})
+		}
+		defer stkResp.Body.Close()
+
+		var stkRes struct {
+			MerchantRequestID   string `json:"MerchantRequestID"`
+			CheckoutRequestID   string `json:"CheckoutRequestID"`
+			ResponseCode        string `json:"ResponseCode"`
+			ResponseDescription string `json:"ResponseDescription"`
+			CustomerMessage     string `json:"CustomerMessage"`
+		}
+
+		if err := json.NewDecoder(stkResp.Body).Decode(&stkRes); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to decode Safaricom response: " + err.Error()})
+		}
+
+		if stkRes.ResponseCode == "0" {
+			checkoutRequestID = stkRes.CheckoutRequestID
+			realSTKSent = true
+			logger.Info("Real M-Pesa STK Push initiated successfully", "checkout_request_id", checkoutRequestID)
+		} else {
+			logger.Warn("Safaricom STK Push rejected", "code", stkRes.ResponseCode, "desc", stkRes.ResponseDescription)
+			return c.Status(400).JSON(fiber.Map{
+				"error":   fmt.Sprintf("Safaricom rejected request: %s", stkRes.ResponseDescription),
+				"details": stkRes,
+			})
+		}
+	} else {
+		// Mock Flow
+		checkoutRequestID = "ws_CO_" + uuid.New().String()
+		logger.Info("Using simulated M-Pesa STK Push flow", "checkout_request_id", checkoutRequestID)
+	}
 
 	// 1. Save payment as pending in the DB
 	payment := common.Payment{
 		CheckoutRequestID: checkoutRequestID,
 		UserID:            req.UserID,
 		AmountKes:         req.Amount,
-		PhoneNumber:       req.PhoneNumber,
+		PhoneNumber:       phone,
 		Status:            "pending",
 	}
 
@@ -130,7 +237,6 @@ func handleSTKPush(c *fiber.Ctx) error {
 	}
 
 	// 2. Start session (inactive status, waiting for payment confirmation)
-	// Calculate EndTime temporarily
 	var plan common.Plan
 	if err := database.DB.First(&plan, req.PlanID).Error; err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid plan id"})
@@ -168,8 +274,10 @@ func handleSTKPush(c *fiber.Ctx) error {
 	payment.SessionID = &session.ID
 	database.DB.Save(&payment)
 
-	// Simulate async STK Callback
-	go triggerMockCallback(checkoutRequestID, req.PhoneNumber, req.Amount)
+	if !realSTKSent {
+		// Simulate async STK Callback only for mock runs
+		go triggerMockCallback(checkoutRequestID, phone, req.Amount)
+	}
 
 	return c.JSON(fiber.Map{
 		"checkout_request_id": checkoutRequestID,
@@ -343,4 +451,80 @@ func notifyApiToAuthorize(sessionID uint, mac, ip string, rateDown, rateUp int64
 	defer resp.Body.Close()
 
 	logger.Info("Notified API server to authorize client", "session_id", sessionID, "response_status", resp.Status)
+}
+
+func loadEnvFile(filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		val = strings.Trim(val, `"'`)
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
+}
+
+func sanitizePhoneNumber(phone string) string {
+	reg := regexp.MustCompile(`[^0-9]`)
+	clean := reg.ReplaceAllString(phone, "")
+
+	if len(clean) == 10 && (strings.HasPrefix(clean, "07") || strings.HasPrefix(clean, "01")) {
+		return "254" + clean[1:]
+	}
+	if len(clean) == 12 && strings.HasPrefix(clean, "254") {
+		return clean
+	}
+	return clean
+}
+
+func getMpesaAccessToken(baseURL, consumerKey, consumerSecret string) (string, error) {
+	url := fmt.Sprintf("%s/oauth/v1/generate?grant_type=client_credentials", baseURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", consumerKey, consumerSecret)))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("auth failed with status %d", resp.StatusCode)
+	}
+
+	var res struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+
+	return res.AccessToken, nil
+}
+
+func generateMpesaPassword(shortcode, passkey, timestamp string) string {
+	val := shortcode + passkey + timestamp
+	return base64.StdEncoding.EncodeToString([]byte(val))
 }

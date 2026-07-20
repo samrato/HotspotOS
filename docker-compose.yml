@@ -34,48 +34,34 @@ services:
       context: .
       dockerfile: docker/Dockerfile.api
     container_name: hotspotos-api
-    ports:
-      - "8080:8080"
+    network_mode: host
     environment:
       - PORT=8080
-      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/hotspotos?sslmode=disable
-      - REDIS_URL=redis:6379
+      - DATABASE_URL=postgres://postgres:postgres@localhost:5432/hotspotos?sslmode=disable
+      - REDIS_URL=localhost:6379
       - JWT_SECRET=super_secret_jwt_key_hotspotos
-      - NETWORK_MANAGER_URL=http://network-manager:8081
-      - PAYMENT_SERVICE_URL=http://payment-service:8082
+      - NETWORK_MANAGER_URL=http://localhost:8081
+      - PAYMENT_SERVICE_URL=http://localhost:8082
+      - GATEWAY_IP=192.168.12.1
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  network-manager:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.network-manager
-    container_name: hotspotos-network-manager
-    ports:
-      - "8081:8081"
-    environment:
-      - PORT=8081
-      - SIMULATE=true # Fallback simulation mode to pass testing in sandboxed/container environments
-    cap_add:
-      - NET_ADMIN # Required for nftables manipulation on real hosts
-    depends_on:
-      - redis
-
   payment-service:
     build:
       context: .
       dockerfile: docker/Dockerfile.payment-service
     container_name: hotspotos-payment-service
-    ports:
-      - "8082:8082"
+    network_mode: host
+    env_file:
+      - .env
     environment:
       - PORT=8082
-      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/hotspotos?sslmode=disable
-      - REDIS_URL=redis:6379
-      - API_INTERNAL_URL=http://api:8080
+      - DATABASE_URL=postgres://postgres:postgres@localhost:5432/hotspotos?sslmode=disable
+      - REDIS_URL=localhost:6379
+      - API_INTERNAL_URL=http://localhost:8080
     depends_on:
       postgres:
         condition: service_healthy

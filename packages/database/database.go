@@ -108,6 +108,10 @@ func Migrate(db *gorm.DB) error {
 			{Name: "1 Hour Plan", DurationMinutes: 60, PriceKes: 20.00, BandwidthLimitDown: 2048, BandwidthLimitUp: 1024},
 			{Name: "3 Hours Plan", DurationMinutes: 180, PriceKes: 50.00, BandwidthLimitDown: 3072, BandwidthLimitUp: 1536},
 			{Name: "24 Hours Plan", DurationMinutes: 1440, PriceKes: 100.00, BandwidthLimitDown: 5120, BandwidthLimitUp: 2048},
+			{Name: "THEGOAT", DurationMinutes: 10080, PriceKes: 500.00, BandwidthLimitDown: 10240, BandwidthLimitUp: 5120},
+			{Name: "1 KES Test Plan", DurationMinutes: 60, PriceKes: 1.00, BandwidthLimitDown: 2048, BandwidthLimitUp: 1024},
+			{Name: "2 KES Test Plan", DurationMinutes: 120, PriceKes: 2.00, BandwidthLimitDown: 3072, BandwidthLimitUp: 1536},
+			{Name: "5 KES Test Plan", DurationMinutes: 300, PriceKes: 5.00, BandwidthLimitDown: 5120, BandwidthLimitUp: 2048},
 		}
 		for _, plan := range plans {
 			if err := db.Create(&plan).Error; err != nil {
@@ -115,6 +119,24 @@ func Migrate(db *gorm.DB) error {
 			}
 		}
 		logger.Info("Default plans seeded")
+	} else {
+		// Ensure THEGOAT and the test plans are created even if plans already exist
+		additionalPlans := []common.Plan{
+			{Name: "THEGOAT", DurationMinutes: 10080, PriceKes: 500.00, BandwidthLimitDown: 10240, BandwidthLimitUp: 5120},
+			{Name: "1 KES Test Plan", DurationMinutes: 60, PriceKes: 1.00, BandwidthLimitDown: 2048, BandwidthLimitUp: 1024},
+			{Name: "2 KES Test Plan", DurationMinutes: 120, PriceKes: 2.00, BandwidthLimitDown: 3072, BandwidthLimitUp: 1536},
+			{Name: "5 KES Test Plan", DurationMinutes: 300, PriceKes: 5.00, BandwidthLimitDown: 5120, BandwidthLimitUp: 2048},
+		}
+		for _, plan := range additionalPlans {
+			var existing common.Plan
+			if err := db.Where("name = ?", plan.Name).First(&existing).Error; err != nil {
+				if err := db.Create(&plan).Error; err != nil {
+					logger.Error("Failed to seed additional plan", "name", plan.Name, "error", err)
+				} else {
+					logger.Info("Additional plan seeded successfully", "name", plan.Name)
+				}
+			}
+		}
 	}
 
 	return nil

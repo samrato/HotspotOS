@@ -135,6 +135,7 @@ func TestGetPlans(t *testing.T) {
 }
 
 func TestInternalAuthorize(t *testing.T) {
+	t.Setenv("NETWORK_MANAGER_URL", "http://localhost:9999")
 	db := setupTestDb(t)
 
 	// Seed plan & session

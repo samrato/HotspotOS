@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"crypto/md5"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +81,7 @@ func main() {
 	app.Post("/clients/authorize", handleAuthorize)
 	app.Post("/clients/revoke", handleRevoke)
 	app.Get("/clients/active", handleListActive)
+	app.Get("/clients/mac", handleGetMacByIP)
 
 	logger.Info("Network Manager listening", "port", port)
 	if err := app.Listen(":" + port); err != nil {
@@ -168,4 +173,56 @@ func startUsageSimulator() {
 		}
 		clientsMu.Unlock()
 	}
+}
+
+func handleGetMacByIP(c *fiber.Ctx) error {
+	ip := c.Query("ip")
+	if ip == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "ip parameter is required"})
+	}
+
+	mac, err := getMacFromARP(ip)
+	if err != nil {
+		logger.Warn("Failed to resolve MAC address from ARP table", "ip", ip, "error", err)
+		// Fallback to deterministic mock MAC for localhost, bridged networks, or simulation mode
+		mockMac := generateMockMac(ip)
+		return c.JSON(fiber.Map{"mac": mockMac, "resolved": false})
+	}
+
+	return c.JSON(fiber.Map{"mac": mac, "resolved": true})
+}
+
+func getMacFromARP(ip string) (string, error) {
+	file, err := os.Open("/proc/net/arp")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	// Skip the header line
+	if scanner.Scan() {
+		_ = scanner.Text()
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			ipAddr := fields[0]
+			macAddr := fields[3]
+			if ipAddr == ip && strings.Contains(macAddr, ":") && macAddr != "00:00:00:00:00:00" {
+				return macAddr, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("IP %s not found in ARP table", ip)
+}
+
+func generateMockMac(ip string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(ip))
+	hash := hasher.Sum(nil)
+	return fmt.Sprintf("02:54:%02x:%02x:%02x:%02x", hash[0], hash[1], hash[2], hash[3])
 }

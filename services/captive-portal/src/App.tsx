@@ -145,7 +145,7 @@ export default function App() {
               <div className="w-16 h-16 bg-gradient-to-tr from-orange-500 to-emerald-500 rounded-2xl mx-auto flex items-center justify-center shadow-lg shadow-orange-500/20 mb-4">
                 <Wifi className="w-8 h-8 text-white animate-pulse" />
               </div>
-              <h1 className="text-2xl font-extrabold tracking-tight text-white">Welcome to Juma WiFi</h1>
+              <h1 className="text-2xl font-extrabold tracking-tight text-white">Welcome to THEGOAT</h1>
               <p className="text-slate-400 mt-2 text-sm font-semibold">High-speed internet powered by M-Pesa</p>
             </div>
 

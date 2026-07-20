@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -76,7 +77,11 @@ func (f *LinuxFirewall) AuthorizeClient(mac, ip string, rateDown, rateUp int64) 
 		// Set ingress/egress speed limits on client interface
 		// Real implementation would invoke tc commands. We'll log it here.
 		logger.Info("Configuring tc class for client shaping", "mac", mac, "rateDown", rateDown, "rateUp", rateUp)
-		tcCmd := fmt.Sprintf("tc qdisc add dev eth0 parent 1: classid 1:%s htb rate %dkbit ceil %dkbit", strings.ReplaceAll(mac, ":", ""), rateDown, rateDown)
+		ifname := os.Getenv("HOTSPOT_INTERFACE")
+		if ifname == "" {
+			ifname = "ap0"
+		}
+		tcCmd := fmt.Sprintf("tc qdisc add dev %s parent 1: classid 1:%s htb rate %dkbit ceil %dkbit", ifname, strings.ReplaceAll(mac, ":", ""), rateDown, rateDown)
 		logger.Debug("tc execute", "cmd", tcCmd)
 	}
 

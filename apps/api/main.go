@@ -82,6 +82,7 @@ func main() {
 	app.Post("/auth/login", handleLogin)
 	app.Get("/plans", handleGetPlans)
 	app.Post("/payments/stk", handleSTKPush)
+	app.Post("/payments/callback", handlePaymentCallback)
 
 	// Admin-Only Protected Routes
 	admin := app.Group("/admin", JWTMiddleware(jwtSecret))
@@ -99,6 +100,9 @@ func main() {
 
 	// WebSocket handler for real-time notifications
 	app.Get("/ws", websocket.New(handleWebSocket))
+
+	// Catch-all route for captive portal detection & redirection
+	app.Get("/*", handleCaptivePortalRedirect)
 
 	logger.Info("API Gateway listening", "port", port)
 	if err := app.Listen(":" + port); err != nil {
